@@ -1,0 +1,39 @@
+[Unit]
+Description=TUKE web file integrity monitor
+Wants=network-online.target fim-publish.service
+After=network-online.target fim-publish.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=fim-monitor
+Group=fim-monitor
+SupplementaryGroups=fim-read
+EnvironmentFile=-/etc/fim/smtp.env
+ExecStart=/opt/fim/venv/bin/python -I -m fim watch --config /etc/fim/config.toml
+WorkingDirectory=/
+UMask=0077
+Restart=on-failure
+RestartSec=5
+WatchdogSec=60
+TimeoutStartSec=60
+TimeoutStopSec=20
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/lib/fim/runtime /var/log/fim
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=256M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

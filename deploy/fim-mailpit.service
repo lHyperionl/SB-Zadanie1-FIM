@@ -1,0 +1,21 @@
+[Unit]
+Description=Local Mailpit receiver for the FIM demonstration
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/opt/fim/tools/mailpit --listen 127.0.0.1:8025 --smtp 127.0.0.1:1025 --database /var/lib/fim-mailpit/messages.db --disable-version-check --block-remote-css-and-fonts --smtp-disable-rdns
+StateDirectory=fim-mailpit
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
