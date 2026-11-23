@@ -49,6 +49,30 @@ def test_symlink_and_fifo_are_never_read(ready, now, tmp_path):
     assert "DO NOT READ" not in repr(result)
 
 
+def test_new_symlink_is_unexpected_type_and_never_read(ready, now, tmp_path):
+    # ATTACKS.md scenario 4: a new link, not a replaced file.
+    secret = tmp_path / "outside-secret"
+    secret.write_text("DO NOT READ")
+    (ready.web_root / "link-test").symlink_to(secret)
+    result = findings(ready, now)
+    assert [(f.path, f.kind) for f in result] == [("link-test", "unexpected_type")]
+    assert result[0].actual["kind"] == "symlink"
+    assert result[0].actual["sha256"] is None
+    assert "DO NOT READ" not in repr(result)
+
+
+def test_file_permission_change_is_metadata_only(ready, now):
+    # ATTACKS.md scenario 5: permissions change, content stays the same.
+    path = ready.web_root / "style.css"
+    original = path.stat().st_mode & 0o777
+    changed = 0o666 if original != 0o666 else 0o644
+    path.chmod(changed)
+    result = findings(ready, now)
+    assert [(f.path, f.kind) for f in result] == [("style.css", "metadata_changed")]
+    assert (result[0].expected["mode"], result[0].actual["mode"]) == (original, changed)
+    assert result[0].expected["sha256"] == result[0].actual["sha256"]
+
+
 def test_symlink_directory_component_is_rejected(ready, tmp_path):
     (tmp_path / "redirect").symlink_to(ready.web_root, target_is_directory=True)
     with pytest.raises(OSError):
