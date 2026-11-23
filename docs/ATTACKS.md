@@ -59,8 +59,15 @@ sudo install -m 0664 -o root -g fim-web /var/lib/fim/clean-style.css /var/www/fi
 
 ## 3. Rovnaká veľkosť a zachovaný čas
 
+Tento scenár simuluje silnejšieho útočníka a spúšťa sa pod root. Ľubovoľný
+čas súboru (`os.utime`) môže v Linuxe nastaviť iba vlastník súboru alebo root.
+`style.css` vlastní root, takže `fim-publisher` by obsah zmeniť dokázal
+(zápis cez skupinu `fim-web`), ale pôvodný mtime by už nevrátil
+(`PermissionError: Operation not permitted`).
+
 ```bash
-sudo -u fim-publisher python3 - <<'PY'
+ls -l --full-time /var/www/fim-demo/style.css
+sudo python3 - <<'PY'
 from pathlib import Path
 import os
 p = Path('/var/www/fim-demo/style.css')
@@ -71,9 +78,12 @@ p.write_bytes(original.replace(b'#24352c', b'#ffffff', 1))
 os.utime(p, ns=(s.st_atime_ns, s.st_mtime_ns))
 assert p.stat().st_size == s.st_size
 PY
+ls -l --full-time /var/www/fim-demo/style.css
 ```
 
-Očakávaj `content_changed` napriek zachovanej veľkosti a mtime.
+Oba výpisy `ls` musia ukázať rovnakú veľkosť aj čas až na nanosekundy.
+Očakávaj `content_changed` napriek zachovanej veľkosti a mtime: FIM
+porovnáva SHA-256 obsahu, nie čas ani veľkosť.
 Obnov CSS príkazom `install` z predošlého scenára.
 
 ## 4. Symbolický odkaz alebo FIFO
@@ -91,7 +101,32 @@ sudo -u fim-publisher unlink /var/www/fim-demo/link-test
 sudo -u fim-publisher unlink /var/www/fim-demo/fifo-test
 ```
 
-## 5. Pokus o zmenu referencie alebo programu
+## 5. Zmena oprávnení bez zmeny obsahu
+
+Účet `fim-publisher` vlastní `index.html`, takže mu môže zmeniť práva.
+Útočník tým stránku sprístupní na zápis komukoľvek na serveri:
+
+```bash
+sudo -u fim-publisher chmod 0666 /var/www/fim-demo/index.html
+```
+
+Očakávaj `metadata_changed`: v zázname je `mode` 436 (0664) v `expected`
+a 438 (0666) v `actual`, pričom `sha256` sa nezmenil. Generátor stránku
+s neočakávanými právami neprepíše:
+
+```bash
+sudo systemctl start fim-publish.service
+sudo journalctl -u fim-publish -n 5 --no-pager
+```
+
+Služba má zlyhať s `Refusing to overwrite index.html with unexpected
+ownership/permissions`. Obnova:
+
+```bash
+sudo -u fim-publisher chmod 0664 /var/www/fim-demo/index.html
+```
+
+## 6. Pokus o zmenu referencie alebo programu
 
 ```bash
 sudo -u fim-publisher touch /etc/fim/config.toml
@@ -103,7 +138,7 @@ Na referenčnom Ubuntu 24.04 sa všetky pokusy musia skončiť `Permission denie
 Na inom Pythone uprav iba cestu k `site-packages`. Nejde o očakávaný incident
 zmeny webu: samotné oprávnenia musia zápisu zabrániť.
 
-## 6. Polnoc, výpadok SMTP a reštart
+## 7. Polnoc, výpadok SMTP a reštart
 
 - Reálnu polnoc over cez `systemctl list-timers fim-publish.timer`. Zmeň sa iba
   dátum a meniny; nevznikne bezpečnostný alert. Na rýchle opakovateľné testy
