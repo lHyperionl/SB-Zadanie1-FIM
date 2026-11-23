@@ -1,5 +1,10 @@
 # Výsledky overenia
 
+Dokument má dve časti: pôvodné overenie a následné
+overenie plného nasadenia z 23. 11. 2026.
+
+# Časť 1: Pôvodné overenie implementácie
+
 Implementácia bola overovaná na Linuxe vo WSL, distribúcia Ubuntu 26.04,
 Python 3.12.14, watchdog 7.0.0. Nie iba simuláciou POSIX oprávnení vo Windows.
 
@@ -33,13 +38,77 @@ HTTP API Mailpit. Referenčná databáza ostala byte-for-byte nezmenená.
 Namerané pri jednom behu: **1 doručený e-mail, 1,045 s od zmeny po doručenie**.
 Toto je výsledok malej ukážky, nie výkonová záruka pre ľubovoľný web.
 
-## Čo tieto výsledky nepokrývajú
+## Čo pôvodné výsledky nepokrývali
 
 Kompletný inštalátor s apt, Nginx a zapnutím trvalých systemd služieb nebol
-spustený na používateľovom systéme. Treba ho pred odovzdaním overiť v čerstvej
-Ubuntu 24.04 VM podľa README. Vyššie uvedený root smoke test overuje chránené
-rozloženie a prácu účtov, nenahrádza beh celého servera so systemd sandboxom.
+pri pôvodnom overení spustený. Toto dopĺňa časť 2. Root smoke test overuje
+chránené rozloženie a prácu účtov, nenahrádza beh celého servera so systemd
+sandboxom.
 
 Testy letného času používajú správne časové pásmo a relevantné dátumy;
 neposúvajú systémové hodiny a nesimulujú každý možný skok systémového času.
 Nejde o dôkaz odolnosti voči root ani o záruku zachytenia každej krátkej zmeny.
+
+# Časť 2: Overenie plného nasadenia (23. 11. 2026)
+
+Prostredie: WSL 2, **Ubuntu 24.04.1 LTS** so zapnutým systemd 255,
+Python 3.12.3, watchdog 7.0.0, pytest 9.2.0, aiosmtpd 1.4.6.
+Nejde o vyhradenú VM, ale o existujúcu WSL distribúciu bez predchádzajúcej
+inštalácie FIM.
+
+## Automatizované testy
+
+- Pridané 2 testy v `tests/test_integrity.py`, ktoré výslovne pokrývajú
+  scenáre 4 a 5 z `docs/ATTACKS.md`:
+  - `test_new_symlink_is_unexpected_type_and_never_read`: nový symlink sa
+    nahlási ako `unexpected_type` a cieľ odkazu sa nečíta,
+  - `test_file_permission_change_is_metadata_only`: zmena práv súboru sa
+    nahlási iba ako `metadata_changed`, hash obsahu sa nezmení.
+- Sada bez root: **37 passed, 3 skipped** (16,2 s),
+  `PYTHONPATH=src python -m pytest -q -rs`. Preskočené sú 3 testy, ktoré
+  vyžadujú root. Celkový počet testov je teraz 40.
+- Root testy: **4 passed** (4,65 s),
+  `sudo env PYTHONPATH=src python -m pytest -v tests/test_linux_permissions.py tests/test_installed_smoke.py`.
+  Zahŕňajú 3 testy preskočené v behu bez root a test syntaxe systemd jednotiek.
+- Spolu teda prechádza **všetkých 40 testov**.
+
+## Plná inštalácia
+
+- `sudo bash deploy/install.sh` a `sudo bash deploy/install-mailpit.sh`
+  skončili úspešne. Inštalátor bol spustený priamo z priečinka projektu na
+  `/mnt/c`; súbory do systému kopíruje s explicitnými právami.
+- Služby `fim-monitor`, `fim-publish.timer`, `nginx` a `fim-mailpit` sú
+  aktívne. Časovač má najbližšie spustenie o 00:00:00 CET.
+- Stránka na `http://localhost:8080` zobrazuje dátum 23. 11. 2026 a meniny
+  (Klement).
+- `fim test-alert` doručil e-mail do Mailpit (`http://localhost:8025`).
+- Po úplnom vypnutí a opätovnom spustení WSL sa všetky služby spustili samé.
+
+## Ručné scenáre podľa docs/ATTACKS.md
+
+| Scenár | Výsledok |
+|---|---|
+| 1. Skript vložený do `index.html` | `daily_content_changed`, e-mail doručený; pri opakovaných skenoch nevznikol ďalší e-mail; `fim-publish` odmietol prepis (`Refusing to overwrite noncanonical index.html`); po obnove `incident_resolved` |
+| 2. Pridaný a odstránený súbor | `added` (`probe.php`) a `removed` (`style.css`), oba e-maily doručené, po obnove `incident_resolved` |
+| 3. Rovnaká veľkosť a zachovaný čas | `content_changed`; veľkosť aj mtime pred a po útoku zhodné na nanosekundy |
+| 4. Symlink a FIFO | dvakrát `unexpected_type` (`symlink`, `special`), `sha256` je `null`, monitor pokračoval v skenovaní |
+| 5. Zmena oprávnení | `metadata_changed` (mode 0664 → 0666, rovnaký hash), `fim-publish` odmietol prepis (`unexpected ownership/permissions`) |
+| 6. Zmena konfigurácie, baseline a programu | všetky tri pokusy skončili `Permission denied` |
+| 7. Výpadok SMTP | po zastavení Mailpit `alert_delivery_failed`, po jeho spustení bol čakajúci alert doručený |
+| 7. Pád monitora (`SIGKILL`) | systemd službu reštartoval s novým PID |
+| 7. Polnoc | čaká na overenie 24. 11. 2026: stránka má ukazovať 24. 11. 2026 (Emília) bez bezpečnostného alertu |
+
+## Opravy dokumentácie zistené pri overení
+
+- Scenár 3 v `docs/ATTACKS.md` pôvodne spúšťal útok pod `fim-publisher`.
+  Ten nevlastní `style.css`, takže `os.utime` s pôvodným časom skončil
+  `PermissionError` a mtime sa zmenil. Scenár teraz beží pod root.
+- Doplnený scenár 5 (zmena oprávnení); pôvodné scenáre 5 a 6 sú teraz 6 a 7.
+
+## Čo ani toto overenie nepokrýva
+
+- Inštalácia prebehla vo WSL, nie v čerstvej vyhradenej VM ani na verejne
+  dostupnom serveri.
+- Alerty boli overené iba cez lokálny Mailpit, nie cez skutočnú e-mailovú
+  schránku so STARTTLS a heslom.
+- Reálny prechod cez polnoc ešte nebol pozorovaný (pozri tabuľku vyššie).
