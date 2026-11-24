@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -112,3 +113,15 @@ def test_systemd_unit_syntax(tmp_path):
         units.append(str(target))
     result = subprocess.run(["systemd-analyze", "verify", *units], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_publisher_sandbox_allows_rename_from_staging_to_web():
+    deploy = Path(__file__).resolve().parents[1] / "deploy"
+    paths = tomllib.loads((deploy / "config.toml").read_text(encoding="utf-8"))["paths"]
+    unit = (deploy / "fim-publish.service").read_text(encoding="utf-8")
+    writable = [path for line in unit.splitlines() if line.startswith("ReadWritePaths=")
+                for path in line.split("=", 1)[1].split()]
+    # Each entry is a separate mount; rename across mounts fails with EXDEV.
+    assert len(writable) == 1
+    for key in ("web_root", "staging_dir"):
+        assert Path(paths[key]).is_relative_to(writable[0])

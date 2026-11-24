@@ -1,14 +1,13 @@
 # File Integrity Monitoring – dokumentácia riešenia
 
 Dokument popisuje riešenie zadania 1 z predmetu Softvérová bezpečnosť:
-ako spĺňa požiadavky zadania, ako funguje, ako ho predviesť a aké sú jeho
+ako spĺňa požiadavky zadania, ako funguje, ako ho overiť a aké sú jeho
 bezpečnostné vlastnosti a obmedzenia.
 
-Pri predvedení sú uvedené:
+Pri požiadavkách a útokoch je uvedený súbor, stránka alebo príkaz a k nemu:
 
-- **Predvedenie:** súbor, stránka alebo príkaz,
 - **Očakávaný výsledok:** čo sa má zobraziť, ak riešenie funguje správne,
-- **Vysvetlenie:** čo predvedenie dokazuje a prečo je riešenie navrhnuté takto.
+- **Vysvetlenie:** čo to dokazuje a prečo je riešenie navrhnuté takto.
 
 Súvisiace dokumenty: [README.md](../README.md) (inštalácia a prevádzka),
 [ATTACKS.md](ATTACKS.md) (všetky bezpečnostné scenáre), [VALIDATION.md](VALIDATION.md)
@@ -20,9 +19,9 @@ Súvisiace dokumenty: [README.md](../README.md) (inštalácia a prevádzka),
 
 1. [Zadanie a splnenie požiadaviek](#1-zadanie-a-splnenie-požiadaviek)
 2. [Ako riešenie funguje](#2-ako-riešenie-funguje)
-3. [Prostredie a príprava predvedenia](#3-prostredie-a-príprava-predvedenia)
-4. [Predvedenie požiadaviek zadania](#4-predvedenie-požiadaviek-zadania)
-5. [Predvedenie útokov](#5-predvedenie-útokov)
+3. [Prostredie a príprava](#3-prostredie-a-príprava)
+4. [Overenie požiadaviek zadania](#4-overenie-požiadaviek-zadania)
+5. [Simulácia útokov](#5-simulácia-útokov)
 6. [Automatické testy](#6-automatické-testy)
 7. [Bezpečnostné rozhodnutia](#7-bezpečnostné-rozhodnutia)
 8. [Obmedzenia riešenia](#8-obmedzenia-riešenia)
@@ -43,7 +42,7 @@ Na `index.html` má byť dnešný dátum a meniny, ktoré sa menia o polnoci.
 | # | Požiadavka zadania | Ako ju riešenie spĺňa | Kde v kóde |
 |---|---|---|---|
 | 1 | Pri spustení načíta parametre z konfiguračného súboru | TOML súbor `/etc/fim/config.toml`, cesta sa zadáva parametrom `--config` | [config.py](../src/fim/config.py#L89) |
-| 2 | Zapisuje informácie do logovacieho súboru | `/var/log/fim/fim.jsonl`, jeden JSON záznam na riadok, rotácia 5 × 5 MiB | [events.py](../src/fim/events.py#L22) |
+| 2 | Zapisuje informácie do logovacieho súboru | `/var/log/fim/fim.jsonl`, jeden JSON záznam na riadok, rotácia po 5 MiB, uchováva sa 5 starších súborov | [events.py](../src/fim/events.py#L22) |
 | 3 | Pri incidente upozorní kompetentnú osobu | e-mail cez SMTP, trvalá fronta správ s opakovaním doručenia | [alerts.py](../src/fim/alerts.py#L16), [runtime.py](../src/fim/runtime.py#L52) |
 | 4 | Informácie o baseline sú uložené v databáze | SQLite `/var/lib/fim/reference/baseline.sqlite` | [baseline.py](../src/fim/baseline.py#L76) |
 | 5 | Nasadenie na webovom serveri, monitorovanie súborov webu | Nginx na porte 8080, web `/var/www/fim-demo`, služby systemd | [deploy/](../deploy/) |
@@ -107,8 +106,8 @@ Riešenie tvoria dve časti, ktoré bežia pod dvoma rôznymi systémovými úč
 - **`fim watch` (monitor, účet `fim-monitor`)** beží nepretržite ako služba
   systemd. Web aj baseline môže iba čítať. Zapisuje iba do logu a do
   prevádzkovej databázy incidentov.
-- **`fim publish` (generátor, účet `fim-publisher`)** spúšťa časovač o polnoci.
-  Prepíše `index.html` a skončí.
+- **`fim publish` (generátor, účet `fim-publisher`)** spúšťa časovač o polnoci
+  a systemd pri štarte systému. Prepíše `index.html`, ak už nie je aktuálny, a skončí.
 
 Oddelenie účtov zabezpečuje, že útočník, ktorý ovládne účet s právom meniť
 web, nezíska kontrolu nad monitorom ani nad baseline.
@@ -120,15 +119,16 @@ Monitor spustí kontrolu, keď nastane jedna z týchto udalostí
 
 | Spúšťač | Účel |
 |---|---|
-| Linux ohlási zmenu súboru (`watchdog`, oneskorenie 0,2 s) | okamžitá reakcia, zvyčajne do 1 s |
-| Uplynulo 30 s od poslednej kontroly | poistka pre prípad straty udalosti |
+| Linux ohlási zápis, vytvorenie, zmazanie alebo presun (`watchdog`, oneskorenie 0,2 s) | okamžitá reakcia, zvyčajne do 1 s |
+| Uplynulo 30 s od poslednej kontroly | odhalenie zmien bez takejto udalosti (napríklad samotná zmena práv) a poistka pre prípad jej straty |
 | Zmena dňa a uplynutie 5 s po polnoci | overenie novej dennej stránky |
 
 Kontrola ([monitor.py](../src/fim/monitor.py#L33)):
 
 1. Prejde všetky položky webu ([safefs.py](../src/fim/safefs.py#L100)).
 2. Pre každý súbor vypočíta **SHA-256** a zistí **práva, vlastníka, skupinu
-   a veľkosť**.
+   a veľkosť**. Veľkosť sa ukladá ako informácia do záznamu, samostatne sa
+   neporovnáva, lebo jej zmenu zachytí hash.
 3. Spojí zoznam položiek z baseline so zoznamom na disku a porovná ich:
 
 | V baseline | Na disku | Výsledok |
@@ -138,6 +138,10 @@ Kontrola ([monitor.py](../src/fim/monitor.py#L33)):
 | áno | áno, iný typ | `type_changed` |
 | áno | áno, iné práva alebo vlastník | `metadata_changed` |
 | áno | áno, iný hash | `content_changed` (pri `index.html` `daily_content_changed`) |
+| – | položka sa nedá spoľahlivo prečítať | `scan_error` (neprístupný, príliš veľký alebo počas čítania menený súbor) |
+
+Pri jednom súbore môžu vzniknúť aj dva nálezy naraz, napríklad
+`metadata_changed` a `content_changed`.
 
 4. Každý nález je **incident**: zapíše sa do logu, do prevádzkovej databázy
    a do fronty e-mailov ([runtime.py](../src/fim/runtime.py#L52)).
@@ -159,7 +163,7 @@ Pri kontrole monitor postupuje takto:
 ```
 1. Aký je dnes dátum?                          → 24. 11.
 2. Ako MÁ stránka vyzerať? (vyrenderuj recept) → "...24. 11. 2026...Emília..."
-3. Hash toho, čo MÁ byť                         → 7a1f...
+3. Hash toho, čo MÁ byť                         → 7cfa0c1f...
 4. Hash toho, čo JE na disku                    → zhoda = v poriadku, rozdiel = incident
 ```
 
@@ -179,9 +183,16 @@ Po 5 s je včerajšia stránka incident.
 Časovač [fim-publish.timer](../deploy/fim-publish.timer):
 
 ```ini
-OnCalendar=*-*-* 00:00:00 Europe/Bratislava   # každý deň o polnoci
-Persistent=true                                # zmeškané spustenie dobehne po zapnutí servera
+OnCalendar=*-*-* 00:00:00 Europe/Bratislava
+OnBootSec=15s
+Persistent=true
 ```
+
+`OnCalendar` spúšťa generátor každý deň o polnoci. `OnBootSec` a `Persistent`
+zabezpečia prepis aj vtedy, keď bol server o polnoci vypnutý. Generátor sa
+navyše spúšťa pri štarte pred monitorom (`Wants` a `After`
+vo [fim-monitor.service](../deploy/fim-monitor.service)), aby monitor po výpadku
+nenašiel včerajšiu stránku.
 
 Generátor ([page.py](../src/fim/page.py#L83)):
 
@@ -190,15 +201,73 @@ Generátor ([page.py](../src/fim/page.py#L83)):
    (366 dní vrátane 29. 2.; zdroj: Oficiálne kalendárium MK SR 2025,
    pozri [SOURCE.md](../data/SOURCE.md)).
 2. **Pred prepisom overí existujúcu stránku:** musí to byť presne vygenerovaná
-   stránka z niektorého predošlého dňa a mať očakávané práva. Inak prepis
+   dnešná stránka alebo stránka z niektorého predošlého dňa a mať očakávané práva. Inak prepis
    **odmietne** ([page.py](../src/fim/page.py#L101)). Polnočný prepis tak
    nemôže zakryť útok.
 3. Novú stránku zapíše do dočasného súboru a nahradí ňou pôvodnú jedným
    premenovaním (`os.replace`). Stránka nikdy nie je čiastočne zapísaná.
 
+**Kde stránka vzniká a kde je uložená:** hotový `index.html` nie je súčasťou
+projektu. Existuje iba na serveri v `/var/www/fim-demo/index.html`, projekt
+obsahuje len podklady (šablónu a kalendár).
+
+```
+projekt                               server (Linux)
+data/index.template.html ─┐ install.sh
+data/namedays.sk.json    ─┴──────────► /opt/fim/data/
+                                            │ fim init (pri inštalácii)
+                                            ▼
+                                       baseline.sqlite (recept)
+                                            │ fim publish (denne)
+                                            ▼
+              ┌─ sandbox: ReadWritePaths=/var/www ───────────────┐
+              │                                                  │
+              │   /var/www/fim-staging/page-…  (dočasný súbor)   │
+              │                             │ premenovanie       │
+              │                             ▼                    │
+              │   /var/www/fim-demo/index.html                   │
+              │                             │                    │
+              └─────────────────────────────┼────────────────────┘
+                                            ▼
+                                          Nginx
+```
+
+Rámček je oblasť, do ktorej smie generátor podľa nastavenia systemd zapisovať.
+Oba priečinky musia byť v **jednej** spoločnej oblasti. Pri pôvodnom nastavení
+s dvoma cestami (`/var/www/fim-demo /var/www/fim-staging`) boli oblasti dve
+a premenovanie medzi nimi skončilo chybou `Invalid cross-device link`, takže
+stránka ostala z predošlého dňa (kapitola [10](#10-otázky-a-odpovede)
+a [VALIDATION.md](VALIDATION.md)).
+
+Prvú stránku vytvorí inštalátor príkazom `fim init` pod účtom root a jej
+vlastníkom nastaví `fim-publisher`. Každú ďalšiu vytvára generátor pod účtom
+`fim-publisher`. Podklady berie z receptu v databáze, zmena šablóny alebo
+kalendára v projekte či v `/opt/fim/data/` preto stránku sama nezmení. Nová
+stránka vždy nahradí predošlú, staršie verzie sa neuchovávajú.
+
+### 2.6 Databázy
+
+Riešenie používa dve oddelené databázy SQLite.
+
+| | Referenčná (baseline) | Prevádzková |
+|---|---|---|
+| Súbor | `/var/lib/fim/reference/baseline.sqlite` | `/var/lib/fim/runtime/runtime.sqlite` |
+| Účel | ako má web vyzerať | čo sa stalo |
+| Tabuľky | `entries` (stav súborov), `page_recipe` (recept), `metadata` (čas vytvorenia) | `incidents` (incidenty), `outbox` (fronta e-mailov) |
+| Vlastník | root | `fim-monitor` |
+| Monitor | iba číta | číta a zapisuje |
+| Generátor | iba číta | nemá prístup |
+| Kedy sa mení | iba výslovným príkazom správcu | pri incidente a odosielaní e-mailu |
+| Kód | [baseline.py](../src/fim/baseline.py#L108) | [runtime.py](../src/fim/runtime.py#L26) |
+
+Oddelenie zabezpečuje, že monitor nepotrebuje právo zápisu do baseline.
+Útočník, ktorý by ho ovládol, tak nemôže zmeniť správny stav. Log `fim.jsonl`
+a kalendár `namedays.sk.json` sú súbory, nie databázy. Mailpit má vlastnú
+databázu prijatých e-mailov, ktorá nie je súčasťou FIM.
+
 ---
 
-## 3. Prostredie a príprava predvedenia
+## 3. Prostredie a príprava
 
 ### 3.1 Prostredie
 
@@ -215,7 +284,7 @@ Po inštalácii:
 | http://localhost:8080 | webová stránka (Nginx) |
 | http://localhost:8025 | Mailpit, prijaté alerty (iba lokálne) |
 
-### 3.2 Kontrola stavu pred predvedením
+### 3.2 Kontrola stavu
 
 V termináli v priečinku projektu:
 
@@ -229,46 +298,26 @@ sudo tail -n 1 /var/log/fim/fim.jsonl
 
 ### 3.3 Čisté kópie súborov na obnovu po útokoch
 
-Útoky v kapitole 5 menia web a po každom sa web obnoví z čistej kópie.
+Útoky v kapitole 5 menia web a po útokoch na obsah sa súbor obnoví z čistej kópie.
 Kópia `index.html` musí byť z aktuálneho dňa, preto sa vytvára v deň
-predvedenia a iba vtedy, keď je web čistý (krok 3.2):
+skúšky a iba vtedy, keď je web čistý (krok 3.2):
 
 ```bash
 sudo install -m 0600 /var/www/fim-demo/index.html /var/lib/fim/clean-index.html
 sudo install -m 0600 /var/www/fim-demo/style.css /var/lib/fim/clean-style.css
 ```
 
-V Mailpite (http://localhost:8025) je vhodné pred predvedením zmazať staré
-správy tlačidlom **Delete all**.
-
 Pri WSL musí terminál s Ubuntu zostať otvorený, inak Windows po chvíli WSL
 vypne aj so službami.
 
-### 3.4 Odporúčaný priebeh predvedenia
-
-Približne 12 až 15 minút:
-
-| Čas | Časť | Kapitola |
-|---|---|---|
-| 1 min | Princíp FIM a zadanie | [2.1](#21-princíp-fim), [1](#1-zadanie-a-splnenie-požiadaviek) |
-| 2 min | Architektúra | [2.2](#22-architektúra) |
-| 4 min | Požiadavky 1 až 6 | [4](#4-predvedenie-požiadaviek-zadania) |
-| 4 min | Útoky 1, 3 a 5 | [5](#5-predvedenie-útokov) |
-| 1 min | Automatické testy | [6](#6-automatické-testy) |
-| 1 min | Obmedzenia | [8](#8-obmedzenia-riešenia) |
-
-**Minimálne predvedenie:** stránka s dátumom a meninami, útok 1 s e-mailom
-v Mailpite a vysvetlenie, ako FIM rozlišuje polnočnú zmenu od útoku
-([2.4](#24-denne-sa-meniaci-súbor-indexhtml)).
-
 ---
 
-## 4. Predvedenie požiadaviek zadania
+## 4. Overenie požiadaviek zadania
 
 ### Požiadavka 1: Konfiguračný súbor
 
-**Predvedenie:** [deploy/config.toml](../deploy/config.toml) v repozitári,
-alebo nainštalovaná verzia:
+Konfigurácia v repozitári je [deploy/config.toml](../deploy/config.toml),
+nainštalovanú verziu zobrazí:
 
 ```bash
 sudo cat /etc/fim/config.toml
@@ -284,15 +333,15 @@ sudo cat /etc/fim/config.toml
 | `[page]` | časové pásmo, tolerancia po polnoci, vlastník a práva stránky |
 | `[smtp]` | mailový server, odosielateľ a príjemcovia alertov (`recipients`) |
 
-**Vysvetlenie:** program sa vždy spúšťa s parametrom `--config`.
-Konfiguráciu pri načítaní aj validuje: baseline ani log nesmú byť vo
+**Vysvetlenie:** všetky príkazy programu `fim` (`watch`, `publish`, `init`,
+`check`, `baseline-update`, `test-alert`) vyžadujú parameter `--config` s cestou
+ku konfiguračnému súboru. Monitor aj generátor tak používajú rovnakú
+konfiguráciu. Program ju pri načítaní aj validuje: baseline ani log nesmú byť vo
 vnútri sledovaného webu, nešifrované SMTP je povolené iba na lokálny server
 a cesty musia byť absolútne. Kompetentná osoba je určená položkou
 `recipients`. Kód: [config.py](../src/fim/config.py#L89), funkcia `load`.
 
 ### Požiadavka 2: Logovací súbor
-
-**Predvedenie:**
 
 ```bash
 sudo tail -n 5 /var/log/fim/fim.jsonl
@@ -304,7 +353,7 @@ sudo tail -n 5 /var/log/fim/fim.jsonl
 {"blocked_paths": [], "event": "scan_completed", "findings": 0, "level": "INFO", "timestamp": "2026-11-23T19:52:24.632302+00:00"}
 ```
 
-**Typy záznamov:**
+**Najčastejšie záznamy:**
 
 | Udalosť | Význam |
 |---|---|
@@ -316,11 +365,11 @@ sudo tail -n 5 /var/log/fim/fim.jsonl
 
 **Vysvetlenie:** formát JSON Lines umožňuje strojové spracovanie, napríklad
 v systéme SIEM. Súbor sa rotuje po 5 MiB a uchováva sa päť starších verzií.
-Časové značky sú v UTC. Kód: [events.py](../src/fim/events.py#L34).
+Časové značky sú v UTC. Generátor (`fim publish`) do tohto súboru nezapisuje,
+jeho záznamy sú v žurnáli systemd (`journalctl -u fim-publish`).
+Kód: [events.py](../src/fim/events.py#L34).
 
 ### Požiadavka 3: Upozornenie kompetentnej osoby
-
-**Predvedenie:**
 
 ```bash
 sudo -u fim-monitor /opt/fim/venv/bin/python -I -m fim test-alert --config /etc/fim/config.toml
@@ -340,8 +389,7 @@ opakovanie [runtime.py](../src/fim/runtime.py#L97).
 
 ### Požiadavka 4: Baseline v databáze
 
-**Predvedenie:** výpis baseline pod účtom monitora, databáza je otvorená
-iba na čítanie:
+Výpis baseline pod účtom monitora, databáza je otvorená iba na čítanie:
 
 ```bash
 sudo -u fim-monitor python3 -I - <<'PY'
@@ -385,8 +433,6 @@ Kód: tabuľky [baseline.py](../src/fim/baseline.py#L108), čítanie
 
 ### Požiadavka 5: Nasadenie na webovom serveri
 
-**Predvedenie:**
-
 ```bash
 systemctl status fim-monitor --no-pager
 ls -l /var/www/fim-demo
@@ -407,21 +453,20 @@ má obmedzené práva: zapisovať smie iba do logu a prevádzkovej databázy.
 
 ### Požiadavka 6: Stránka s dátumom a meninami
 
-**Predvedenie:**
-
 1. http://localhost:8080,
 2. naplánovanie časovača:
    ```bash
    systemctl list-timers fim-publish.timer --no-pager
    ```
-3. posledné spustenie generátora:
+3. posledný prepis stránky:
    ```bash
-   sudo journalctl -u fim-publish -n 5 --no-pager
+   sudo journalctl -u fim-publish --no-pager | grep page_published | tail -n 1
    ```
 
 **Očakávaný výsledok:** stránka „Dnes je DD. MM. RRRR“ a „Dnes má meniny: …“;
-najbližšie spustenie časovača o 00:00:00; v žurnáli generátora `page_published`
-z poslednej polnoci.
+najbližšie spustenie časovača o 00:00:00; `page_published` z dnešného dňa.
+Ak server cez polnoc bežal, čas je krátko po 00:00:00, inak krátko po zapnutí.
+Pri ďalších spusteniach v ten istý deň generátor zapíše `page_already_current`.
 
 **Vysvetlenie:** stránku prepisuje časovač systemd každú polnoc v časovom
 pásme Europe/Bratislava. Meniny pochádzajú z oficiálneho kalendária
@@ -432,18 +477,17 @@ túto zmenu odlišuje od útoku, popisuje kapitola
 
 ---
 
-## 5. Predvedenie útokov
+## 5. Simulácia útokov
 
 Útoky simulujú útočníka, ktorý ovládol účet `fim-publisher` s právom meniť
-web. Výnimkou je útok 3, ktorý vyžaduje silnejšieho útočníka (root). Úplný
+web. Výnimkou je útok 3, ktorý vyžaduje silnejšieho útočníka (root), a skúšky
+pádu monitora a výpadku e-mailu, ktoré vykonáva správca. Úplný
 zoznam scenárov je v [ATTACKS.md](ATTACKS.md), namerané výsledky
 v [VALIDATION.md](VALIDATION.md).
 
 Pred útokmi musia existovať čisté kópie (kapitola [3.3](#33-čisté-kópie-súborov-na-obnovu-po-útokoch)).
 
 ### Útok 1: škodlivý skript v stránke
-
-**Predvedenie:**
 
 ```bash
 sudo -u fim-publisher sh -c 'printf "\n<script>alert(1)</script>\n" >> /var/www/fim-demo/index.html'
@@ -481,8 +525,8 @@ nevytvárajú.
 
 ### Útok 3: zmena so zachovanou veľkosťou a časom
 
-**Predvedenie** (ako root, lebo ľubovoľný čas súboru smie nastaviť iba
-vlastník súboru alebo root):
+Útok sa vykonáva ako root, lebo ľubovoľný čas súboru smie nastaviť iba
+vlastník súboru alebo root:
 
 ```bash
 ls -l --full-time /var/www/fim-demo/style.css
@@ -511,31 +555,69 @@ sudo install -m 0664 -o root -g fim-web /var/lib/fim/clean-style.css /var/www/fi
 
 **Vysvetlenie:** farba bola nahradená rovnako dlhou hodnotou a čas zmeny
 bol vrátený na pôvodný. Nástroj, ktorý sleduje iba veľkosť a dátum zmeny,
-by zmenu neodhalil. Hash obsahu podvrhnúť nemožno bez nájdenia kolízie
-SHA-256. Preto riešenie dátum zmeny do baseline vôbec neukladá.
+by zmenu neodhalil. Na podvrhnutie hashu by útočník musel nájsť iný obsah
+s rovnakým SHA-256, čo je prakticky nemožné. Preto riešenie dátum zmeny do baseline vôbec neukladá.
 
-### Útok 5: zmena oprávnení
+### Útok 5: zmena oprávnení bez zmeny obsahu
 
-**Predvedenie:**
+Útočník s účtom `fim-publisher` je vlastníkom `index.html`, preto mu smie
+zmeniť práva. Z `0664` (zapisuje vlastník a skupina `fim-web`) urobí `0666`
+(zapisuje ktokoľvek na serveri). Obsah nemení.
+
+Stav pred útokom, útok a stav po útoku:
 
 ```bash
+stat -c '%a %U:%G %n' /var/www/fim-demo/index.html; sha256sum /var/www/fim-demo/index.html
 sudo -u fim-publisher chmod 0666 /var/www/fim-demo/index.html
+stat -c '%a %U:%G %n' /var/www/fim-demo/index.html; sha256sum /var/www/fim-demo/index.html
 ```
 
-**Očakávaný výsledok:** e-mail **„FIM incident: metadata_changed“**. V logu
-(`sudo grep incident_detected /var/log/fim/fim.jsonl | tail -n 1`) má `mode`
-hodnotu 436 (0664) v `expected` a 438 (0666) v `actual`, `sha256` je
-rovnaký.
+**Očakávaný výsledok:**
+
+1. Práva sa zmenia zo `664` na `666`, vlastník, skupina aj hash ostanú rovnaké.
+2. Mailpit: **„FIM incident: metadata_changed“** približne do 30 s.
+   `daily_content_changed` nepríde, lebo obsah je správny.
+3. Záznam v logu:
+   ```bash
+   sudo grep incident_detected /var/log/fim/fim.jsonl | tail -n 1
+   ```
+
+   | Položka | `expected` | `actual` |
+   |---|---|---|
+   | `mode` | 436 (`0664`) | 438 (`0666`) |
+   | `uid`, `gid` | rovnaké | rovnaké |
+   | `sha256` | hash z dňa vytvorenia baseline | hash dnešnej stránky |
+
+   Hodnoty `sha256` sú rovnaké iba v deň vytvorenia baseline. V ostatné dni sa
+   líšia, lebo stránka sa denne mení, a nie sú príčinou tohto incidentu
+   (kapitola [2.4](#24-denne-sa-meniaci-súbor-indexhtml)).
+4. Generátor stránku s nesprávnymi právami neprepíše:
+   ```bash
+   sudo systemctl start fim-publish.service
+   sudo journalctl -u fim-publish -n 5 --no-pager
+   ```
+   Spustenie skončí chybou, v žurnáli je
+   `Refusing to overwrite index.html with unexpected ownership/permissions`.
 
 **Obnova:**
 
 ```bash
 sudo -u fim-publisher chmod 0664 /var/www/fim-demo/index.html
+sudo tail -n 3 /var/log/fim/fim.jsonl
 ```
 
-**Vysvetlenie:** obsah sa nezmenil, ale stránka sa stala zapisovateľnou pre
-všetkých používateľov servera. FIM sleduje okrem obsahu aj práva a
-vlastníka. Hodnota `mode` je v logu v desiatkovej sústave.
+Do ďalšieho skenu (najneskôr približne 30 s) sa v logu objaví `incident_resolved`
+a `findings: 0`. Čistá kópia nie je potrebná, obsah sa nezmenil.
+
+**Vysvetlenie:** hash sa počíta iba z obsahu, zmenu práv preto neodhalí. FIM
+porovnáva práva, vlastníka a skupinu samostatne
+([monitor.py](../src/fim/monitor.py#L49)). Samotná zmena práv okamžitú kontrolu
+nespustí, odhalí ju najbližší sken alebo kontrola vyvolaná inou zmenou
+(kapitola [2.3](#23-priebeh-jednej-kontroly)). Zmena je nebezpečná aj bez zmeny
+obsahu: do stránky by potom mohol zapisovať aj účet, ktorý toto právo
+nemal, napríklad `www-data`, pod ktorým beží Nginx. Hodnoty `mode` sú v logu
+v desiatkovej sústave. Útok je opakom útoku 3, kde sa zmenil obsah a práva
+ostali rovnaké.
 
 ### Ďalšie scenáre
 
@@ -546,26 +628,25 @@ vlastníka. Hodnota `mode` je v logu v desiatkovej sústave.
 | 4. Symlink | `sudo -u fim-publisher ln -s /etc/passwd /var/www/fim-demo/link-test` | `unexpected_type`, cieľ odkazu sa nečíta |
 | 4. FIFO | `sudo -u fim-publisher mkfifo /var/www/fim-demo/fifo-test` | `unexpected_type`, monitor sa nezablokuje |
 | 6. Zmena FIM samotného | `sudo -u fim-publisher touch /etc/fim/config.toml` | `Permission denied` |
-| 7. Pád monitora | `sudo systemctl kill --signal=SIGKILL fim-monitor` | systemd službu do 5 s znova spustí |
+| 7. Pád monitora | `sudo systemctl kill --signal=SIGKILL fim-monitor` | systemd službu po 5 s znova spustí |
 | 7. Výpadok e-mailu | `sudo systemctl stop fim-mailpit`, útok, `sudo systemctl start fim-mailpit` | `alert_delivery_failed`, e-mail doručený dodatočne |
 
 Obnova po scenároch 2 a 4: odstránenie pridaných objektov príkazom `unlink`
 a obnova `style.css` z čistej kópie.
 
-### Riešenie problémov pri predvedení
+### Riešenie problémov
 
 | Situácia | Postup |
 |---|---|
 | Neprišiel e-mail | `sudo tail -n 5 /var/log/fim/fim.jsonl`. Ak je v logu `incident_detected`, detekcia fungovala a problém je v doručení (`systemctl is-active fim-mailpit`). |
 | Web zostal zmenený | obnova z čistých kópií (kapitola [13](#13-prehľad-príkazov)) a kontrola `findings: 0` v logu |
-| Po obnove `index.html` stále trvá incident | čistá kópia je z predošlého dňa; `sudo systemctl start fim-publish.service` ju aktualizuje na dnešný deň |
+| Po obnove `index.html` stále trvá incident | čistá kópia je z predošlého dňa; `sudo systemctl start fim-publish.service` stránku prepíše na dnešný deň |
 
 ---
 
 ## 6. Automatické testy
 
-Projekt obsahuje **40 automatických testov** (pytest). Všetky prechádzajú,
-výsledky sú v [VALIDATION.md](VALIDATION.md).
+Projekt obsahuje **41 automatických testov** (pytest). Výsledky sú v [VALIDATION.md](VALIDATION.md).
 
 **Príprava** (jednorazovo, v priečinku projektu):
 
@@ -575,6 +656,16 @@ python3 -m venv ~/fim-venv
 ~/fim-venv/bin/pip install "pytest>=8,<10" "aiosmtpd>=1.4.6,<2"
 ```
 
+| Príkaz | Účel |
+|---|---|
+| `python3 -m venv ~/fim-venv` | vytvorí oddelené prostredie Pythonu pre testy. Knižnice sa neinštalujú do systému, do projektu ani do prostredia nasadeného FIM (`/opt/fim/venv`). |
+| `pip install --require-hashes -r requirements.txt` | nainštaluje knižnicu `watchdog`, ktorú potrebuje FIM, v presnej verzii. `--require-hashes` overí SHA-256 stiahnutého súboru a pri nezhode inštaláciu odmietne. |
+| `pip install "pytest…" "aiosmtpd…"` | nainštaluje nástroje potrebné iba na testy: `pytest` testy spúšťa, `aiosmtpd` je testovací mailový server. Rozsahy verzií sú z `pyproject.toml`. |
+
+Na prevádzku FIM toto prostredie potrebné nie je. Príkaz `venv` vyžaduje balík
+`python3-venv`, ktorý nainštaluje `deploy/install.sh`. Po testovaní možno
+prostredie odstrániť príkazom `rm -rf ~/fim-venv`.
+
 **Spustenie:**
 
 ```bash
@@ -582,8 +673,14 @@ PYTHONPATH=src ~/fim-venv/bin/python -m pytest -q
 sudo env PYTHONPATH=src ~/fim-venv/bin/python -m pytest -q tests/test_linux_permissions.py tests/test_installed_smoke.py
 ```
 
-**Očakávaný výsledok:** `37 passed, 3 skipped` a `4 passed`. Tri testy
-preskočené v prvom behu vyžadujú root a prebehnú v druhom.
+**Očakávaný výsledok:**
+
+| Príkaz | Výsledok | Význam |
+|---|---|---|
+| prvý (všetky testy, bez root) | `38 passed, 3 skipped` | 3 preskočené testy vyžadujú root |
+| druhý (dva súbory, s root) | `5 passed` | 3 predtým preskočené a 2, ktoré prebehli aj v prvom behu |
+
+Spolu sa tak overí všetkých 41 testov (38 + 3).
 
 | Súbor | Čo testuje |
 |---|---|
@@ -591,9 +688,10 @@ preskočené v prvom behu vyžadujú root a prebehnú v druhom.
 | [test_daily.py](../tests/test_daily.py) | polnoc: koniec roka, priestupný deň, zmena letného času, 5 s tolerancia, útok tesne po polnoci, 10-dňový výpadok |
 | [test_alerts.py](../tests/test_alerts.py) | e-maily: trvalá fronta, opakovanie, deduplikácia, skutočné odoslanie, STARTTLS pred autentifikáciou |
 | [test_daemon_cli.py](../tests/test_daemon_cli.py) | detekcia do 2 s cez udalosti, náhradné skeny, návratové kódy príkazov |
-| [test_linux_permissions.py](../tests/test_linux_permissions.py), [test_installed_smoke.py](../tests/test_installed_smoke.py) | oddelenie účtov a chránená inštalácia (vyžadujú root), syntax jednotiek systemd |
+| [test_linux_permissions.py](../tests/test_linux_permissions.py), [test_installed_smoke.py](../tests/test_installed_smoke.py) | oddelenie účtov a chránená inštalácia (vyžadujú root), syntax jednotiek systemd a zapisovateľná cesta generátora |
 
-Testy bežia v dočasných priečinkoch a nainštalovaného systému sa nedotýkajú.
+Testy bežia v dočasných priečinkoch, súbory a databázy nainštalovaného FIM
+nemenia a e-maily do Mailpitu neposielajú. Sandbox systemd nespúšťajú.
 Pokrývajú aj prípady, ktoré sa ručne predvádzajú ťažko: prechod polnocou pri
 zmene letného času alebo súbor, ktorý sa mení počas čítania. Ručné scenáre
 overujú reálne nasadenie, automatické testy logiku programu.
@@ -606,6 +704,7 @@ overujú reálne nasadenie, automatické testy logiku programu.
 |---|---|
 | **Dva oddelené účty** (`fim-monitor`, `fim-publisher`) | ovládnutie účtu, ktorý zapisuje web, nedáva kontrolu nad monitorom |
 | **Monitor má web aj baseline iba na čítanie** | ani ovládnutý monitor nemôže meniť web ani referenčný stav; systemd mu navyše zakazuje zápis mimo logu a prevádzkovej databázy (`ProtectSystem=strict`, `ReadWritePaths`) |
+| **Generátor v sandboxe** (`ProtectSystem=strict`, `ReadWritePaths=/var/www`) | okrem vlastných dočasných súborov môže zapisovať iba pod `/var/www`, kde ho práva súborov obmedzujú na web a prípravný priečinok |
 | **Dve databázy:** referenčná (`baseline.sqlite`, vlastník root) a prevádzková (`runtime.sqlite`) | referenčný stav je oddelený od zapisovateľných údajov |
 | **Žiadna automatická obnova** | obnova by odstránila dôkazy, útočník by mohol súbor meniť opakovane a príčina by ostala neodstránená |
 | **Generátor neprepíše podozrivú stránku** | polnočná aktualizácia nesmie zakryť útok |
@@ -632,7 +731,7 @@ Kód: [safefs.py](../src/fim/safefs.py#L122) (symlinky),
 | **Veľmi krátka zmena môže uniknúť** | zmena vrátená v priebehu zlomku sekundy nemusí byť zachytená. |
 | **Kontrolujú sa súbory na disku** | nie odpovede HTTP, ktoré dostane návštevník, ani stav pamäte servera. |
 | **Úmyselné zastavenie služby** | systemd reštartuje pád, ale na zastavenie služby administrátorom alebo útočníkom s root nikto neupozorní. |
-| **Rozsah overenia** | overené vo WSL s lokálnym Mailpitom, nie na verejnom serveri so skutočnou e-mailovou schránkou. |
+| **Rozsah overenia** | overené vo WSL s lokálnym Mailpitom, nie na verejnom serveri so skutočnou e-mailovou schránkou. Prepis po štarte systému bol overený, automatický prepis presne o 00:00 zatiaľ nie (stav k 24. 11. 2026, pozri [VALIDATION.md](VALIDATION.md)). |
 
 FIM je detekčné opatrenie. Odhalí zmenu súborov, nezabráni jej a neochráni
 pred útočníkom s plnými právami. Preto sa kombinuje s preventívnymi
@@ -649,13 +748,13 @@ konfigurácie a baseline v scenári 6.
 | **Kedy monitorovať** (slajd 4): neustále, v pravidelných intervaloch, po udalosti, pri incidente | udalosti systému (neustále), sken každých 30 s (pravidelne), kontrola po polnoci (po udalosti), príkaz `fim check` (pri incidente) |
 | **Scanner a monitor** (slajd 5) | `fim watch` je **monitor** (priebežne, takmer okamžite, generuje upozornenie); `fim check` je **scanner** (jednorazová kontrola s návratovým kódom 0/1/2) |
 | **Čo monitorovať** (slajd 6): servery, webové služby | súbory webovej stránky |
-| **Sledované vlastnosti** (slajd 7): počet, umiestnenie, atribúty, obsah | počet a umiestnenie (`added`, `removed`), názov (cesta), veľkosť, práva a vlastník (`metadata_changed`), obsah (SHA-256). Dátum modifikácie sa zámerne nepoužíva, dá sa podvrhnúť (útok 3). |
+| **Sledované vlastnosti** (slajd 7): počet, umiestnenie, atribúty, obsah | počet a umiestnenie (`added`, `removed`), názov a prípona (cesta), práva a vlastník (`metadata_changed`), obsah (SHA-256). Veľkosť sa zaznamenáva, jej zmenu zachytí hash. Dátum modifikácie sa zámerne nepoužíva, dá sa podvrhnúť (útok 3); dátum vzniku sa neukladá. |
 | **Postup** (slajd 8): aktíva, baseline, odtlačky, monitorovanie, logovanie, výstrahy, reportovanie | `web_root` v konfigurácii, `fim init`, SHA-256, `fim watch`, `fim.jsonl`, e-mail, história incidentov v `runtime.sqlite` |
 | **Výhody** (slajd 9): odhalenie súborov na nesprávnom mieste, návrat do baseline | `added` odhalí napríklad zabudnutú zálohu databázy; obnova z čistých kópií a automatické uzavretie incidentu |
 | **Nevýhody** (slajd 10): časová náročnosť, dynamické súbory, veľký počet výstrah | limity veľkosti; recept pre `index.html`; deduplikácia incidentov |
-| **Vznik baseline** (slajd 12): pri prvom alebo poslednom skenovaní | `fim init` (prvé), `fim baseline-update --accept-current` (schválená zmena) |
+| **Vznik baseline** (slajd 12): pred nasadením, pri prvom alebo poslednom skenovaní | pri prvom skenovaní: `fim init` počas inštalácie. Neskôr ju mení iba výslovné `fim baseline-update --accept-current`, nie bežný sken. |
 | **Odtlačky** (slajd 13): parita, CRC, MD5, SHA-1, SHA-2, SHA-3 | **SHA-256** (rodina SHA-2) |
-| **Normy** (slajdy 14 až 16): PCI DSS, NERC CIP, NIST SI-7 a ďalšie | normy vyžadujú detekciu neoprávnených zmien a upozornenie, čo riešenie realizuje |
+| **Normy** (slajdy 14 až 16): PCI DSS, NERC CIP, NIST SI-7 a ďalšie | PCI DSS, NERC CIP a NIST SI-7 vyžadujú detekciu neoprávnených zmien, pri ostatných je FIM podporné opatrenie. Riešenie ukazuje túto detekciu a upozornenie, súlad s normami neposudzuje. |
 
 ---
 
@@ -667,8 +766,8 @@ vytvoriť. MD5 a SHA-1 majú známe kolízie, preto sa na bezpečnostné účely
 neodporúčajú. SHA-256 je súčasný štandard a je dostatočne rýchly.
 
 **Prečo sa do baseline neukladá dátum zmeny (mtime)?**
-Dá sa podvrhnúť (útok 3). Hash obsahu podvrhnúť nemožno. Práva, vlastník
-a veľkosť sa ukladajú.
+Dá sa podvrhnúť (útok 3), hash obsahu prakticky nie. Práva, vlastník, skupina
+a veľkosť sa ukladajú, porovnávajú sa práva, vlastník a skupina.
 
 **Čo ak útočník zmení baseline?**
 Baseline patrí rootovi s právami `0640`, monitor aj generátor ju môžu iba
@@ -695,14 +794,23 @@ Monitor a generátor nebežia v tej istej milisekunde. Počas 5 s je platná aj
 presne včerajšia stránka, nie ľubovoľná úprava.
 
 **Čo ak je server o polnoci vypnutý?**
-Časovač má `Persistent=true`, prepis sa vykoná po zapnutí. Generátor
+Prepis sa vykoná automaticky po zapnutí, ešte pred spustením monitora, takže
+alert nevznikne. Overené je to simuláciou (pozri [VALIDATION.md](VALIDATION.md)). Generátor
 aktualizuje aj stránku staršiu o niekoľko dní, ak ide presne o vygenerovanú
 stránku z niektorého predošlého dňa.
 
+**Prečo má generátor v systemd povolenú jednu spoločnú cestu `/var/www`?**
+Novú stránku pripraví v `/var/www/fim-staging` a premenovaním ju presunie do
+`/var/www/fim-demo`. Pri dvoch cestách v `ReadWritePaths` vytvorí systemd dve
+pripojenia a premenovanie medzi nimi skončí chybou `Invalid cross-device link`.
+Táto chyba bola zistená pri overovaní nasadenia, keď FIM nahlásil neaktuálnu
+stránku (pozri [VALIDATION.md](VALIDATION.md)). Súborové práva ostali rovnaké.
+
 **Ako rýchlo FIM odhalí zmenu?**
-Pri udalosti zo systému zvyčajne do 1 s; v meraní trvalo od zmeny po
-doručenie e-mailu 1,045 s. Ak udalosť nepríde, najneskôr pri ďalšom skene
-o 30 s.
+Pri udalosti zo systému zvyčajne do 1 s; v pôvodnom meraní autora trvalo od
+zmeny po doručenie e-mailu 1,045 s. Samotná zmena práv alebo vlastníka okamžitú
+kontrolu nespustí, odhalí ju najneskôr ďalší sken približne do 30 s. Rovnako sa
+odhalí zmena, ktorej udalosť sa stratí.
 
 **Prečo pri pretrvávajúcom útoku nepríde e-mail pri každom skene?**
 Každý nález má odtlačok (hash jeho obsahu). Kým je incident s rovnakým
@@ -726,14 +834,16 @@ schválil by zmenený stav.
 **Prečo dve databázy?**
 Referenčná (baseline) je iba na čítanie a patrí rootovi. Prevádzková
 (incidenty a fronta e-mailov) sa neustále mení a patrí monitoru. Pri jednej
-databáze by monitor potreboval právo zápisu aj do baseline.
+databáze by monitor potreboval právo zápisu aj do baseline (kapitola
+[2.6](#26-databázy)).
 
 **Prečo Linux?**
 Riešenie využíva linuxové práva súborov, systémové účty, systemd a Nginx.
 Na Windows beží vo WSL. Referenčné prostredie je Ubuntu 24.04.
 
 **Prečo log vo formáte JSON?**
-Každý záznam má rovnakú štruktúru a dá sa strojovo vyhľadávať a spracovať.
+Každý záznam obsahuje čas, úroveň a udalosť, k nim podľa typu ďalšie údaje.
+Dá sa strojovo vyhľadávať a spracovať.
 
 **Ako sa mení príjemca alertov?**
 V `/etc/fim/config.toml`, sekcia `[smtp]`, položka `recipients`, a potom
@@ -769,6 +879,8 @@ deploy/                                                          (požiadavka 5)
   fim-monitor.service   služba monitora
   fim-publish.service   služba generátora
   fim-publish.timer     časovač o polnoci
+  fim-mailpit.service   služba testovacieho prijímača e-mailov
+  smtp.env.example      vzor súboru s heslom SMTP
   nginx.conf            webový server na porte 8080
 
 data/
@@ -776,12 +888,20 @@ data/
   namedays.sk.json      kalendár menín (366 dní)
   SOURCE.md             pôvod kalendára
 
+demo/
+  style.css             štýl ukážkovej stránky
+
+tools/
+  create_demo.py        ukážka bez inštalácie
+  import_calendar.py    import kalendára menín
+  smoke_mailpit.py      test so skutočným Mailpitom
+
 docs/
   DOCUMENTATION.md      tento dokument
   ATTACKS.md            bezpečnostné scenáre
   VALIDATION.md         výsledky overenia
 
-tests/                  40 automatických testov
+tests/                  41 automatických testov
 ```
 
 **Nainštalovaný systém:**
@@ -794,6 +914,7 @@ tests/                  40 automatických testov
 | `/var/lib/fim/runtime/runtime.sqlite` | incidenty a fronta e-mailov | fim-monitor, `0600` |
 | `/var/log/fim/fim.jsonl` | log | fim-monitor |
 | `/var/www/fim-demo/` | sledovaný web | root:fim-web, `2775` |
+| `/var/www/fim-staging/` | príprava novej stránky | fim-publisher:fim-web, `0700` |
 
 ---
 
@@ -809,7 +930,9 @@ tests/                  40 automatických testov
 | **Služba (daemon)** | program bežiaci na pozadí, spúšťaný systémom |
 | **systemd** | správca služieb v Linuxe; spúšťa ich pri štarte a reštartuje po páde |
 | **Časovač (timer)** | jednotka systemd, ktorá spustí službu v stanovený čas |
-| **watchdog / inotify** | mechanizmus, ktorým Linux hlási zmeny súborov |
+| **inotify** | mechanizmus, ktorým Linux hlási zmeny súborov |
+| **watchdog** | knižnica Pythonu, ktorá tieto hlásenia prijíma (nesúvisí s `WatchdogSec` v systemd) |
+| **Sandbox** | obmedzenie služby v systemd, napríklad kam smie zapisovať |
 | **Nginx** | webový server |
 | **SMTP** | protokol na odosielanie e-mailov |
 | **Mailpit** | lokálny testovací mailový server, prijaté e-maily iba zobrazuje |

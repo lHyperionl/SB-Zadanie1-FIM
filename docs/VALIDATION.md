@@ -1,7 +1,7 @@
 # Výsledky overenia
 
 Dokument má dve časti: pôvodné overenie a následné
-overenie plného nasadenia z 23. 11. 2026.
+overenie plného nasadenia z 23. a 24. 11. 2026.
 
 # Časť 1: Pôvodné overenie implementácie
 
@@ -49,7 +49,7 @@ Testy letného času používajú správne časové pásmo a relevantné dátumy
 neposúvajú systémové hodiny a nesimulujú každý možný skok systémového času.
 Nejde o dôkaz odolnosti voči root ani o záruku zachytenia každej krátkej zmeny.
 
-# Časť 2: Overenie plného nasadenia (23. 11. 2026)
+# Časť 2: Overenie plného nasadenia (23. a 24. 11. 2026)
 
 Prostredie: WSL 2, **Ubuntu 24.04.1 LTS** so zapnutým systemd 255,
 Python 3.12.3, watchdog 7.0.0, pytest 9.2.0, aiosmtpd 1.4.6.
@@ -64,19 +64,24 @@ inštalácie FIM.
     nahlási ako `unexpected_type` a cieľ odkazu sa nečíta,
   - `test_file_permission_change_is_metadata_only`: zmena práv súboru sa
     nahlási iba ako `metadata_changed`, hash obsahu sa nezmení.
-- Sada bez root: **37 passed, 3 skipped** (16,2 s),
+- Pridaný 1 test v `tests/test_linux_permissions.py`,
+  `test_publisher_sandbox_allows_rename_from_staging_to_web`. Kontroluje
+  nastavenie `fim-publish.service`; na pôvodnom nastavení zlyhá, na
+  opravenom prejde. Samotný sandbox systemd nespúšťa.
+- Sada bez root (24. 11.): **38 passed, 3 skipped** (11,9 s),
   `PYTHONPATH=src python -m pytest -q -rs`. Preskočené sú 3 testy, ktoré
-  vyžadujú root. Celkový počet testov je teraz 40.
-- Root testy: **4 passed** (4,65 s),
-  `sudo env PYTHONPATH=src python -m pytest -v tests/test_linux_permissions.py tests/test_installed_smoke.py`.
-  Zahŕňajú 3 testy preskočené v behu bez root a test syntaxe systemd jednotiek.
-- Spolu teda prechádza **všetkých 40 testov**.
+  vyžadujú root. Celkový počet testov je teraz 41.
+- Root testy (24. 11., po opravách): **5 passed** (2,88 s),
+  `sudo env PYTHONPATH=src python -m pytest -q tests/test_linux_permissions.py tests/test_installed_smoke.py`.
+  Zahŕňajú 3 testy preskočené v behu bez root, test syntaxe systemd jednotiek
+  a test zapisovateľnej cesty generátora.
+- Spolu teda po opravách prešlo **všetkých 41 testov**.
 
 ## Plná inštalácia
 
 - `sudo bash deploy/install.sh` a `sudo bash deploy/install-mailpit.sh`
-  skončili úspešne. Inštalátor bol spustený priamo z priečinka projektu na
-  `/mnt/c`; súbory do systému kopíruje s explicitnými právami.
+  skončili úspešne. Inštalátor bol spustený z kópie projektu v domovskom
+  priečinku WSL (`~/fim`), nie z `/mnt/c`.
 - Služby `fim-monitor`, `fim-publish.timer`, `nginx` a `fim-mailpit` sú
   aktívne. Časovač má najbližšie spustenie o 00:00:00 CET.
 - Stránka na `http://localhost:8080` zobrazuje dátum 23. 11. 2026 a meniny
@@ -96,7 +101,24 @@ inštalácie FIM.
 | 6. Zmena konfigurácie, baseline a programu | všetky tri pokusy skončili `Permission denied` |
 | 7. Výpadok SMTP | po zastavení Mailpit `alert_delivery_failed`, po jeho spustení bol čakajúci alert doručený |
 | 7. Pád monitora (`SIGKILL`) | systemd službu reštartoval s novým PID |
-| 7. Polnoc | čaká na overenie 24. 11. 2026: stránka má ukazovať 24. 11. 2026 (Emília) bez bezpečnostného alertu |
+| 7. Prepis po zmeškanej polnoci | 24. 11. o 09:38 **najprv zlyhal** (`Invalid cross-device link`) a monitor správne nahlásil `daily_content_changed`. Po oprave o 09:49:57 `page_published`, stránka 24. 11. 2026 (Emília), `incident_resolved`, `findings: 0` |
+| 7. Automatický prepis po štarte (po oprave) | 24. 11.: pri zastavenom monitore vložená platná stránka z 23. 11. a Ubuntu vypnuté (`wsl --terminate`). Po zapnutí o 10:22:42 `page_published` bez zásahu, monitor sa spustil až potom, `findings: 0`, žiadny alert. Simulácia, nie skutočne zmeškaná polnoc |
+| 7. Polnoc (00:00) | zatiaľ nepozorovaná, WSL bolo v noci z 23. na 24. 11. vypnuté |
+
+## Chyba nasadenia zistená pri overení
+
+- **Prejav:** generátor nedokázal vymeniť stránku za stránku nového dňa,
+  požiadavka na polnočnú zmenu preto na nainštalovanom systéme nefungovala.
+- **Príčina:** `fim-publish.service` mal v `ReadWritePaths` dve cesty.
+  Systemd z nich vytvorí dve pripojenia a premenovanie súboru zo
+  `fim-staging` do `fim-demo` skončí chybou `EXDEV`, hoci ide o ten istý
+  súborový systém. Chyba nezávisí od vypnutia WSL.
+- **Prečo sa neprejavila skôr:** v deň inštalácie bola stránka aktuálna
+  (`page_already_current`) a automatické testy bežia mimo sandboxu systemd.
+- **Oprava:** `ReadWritePaths=/var/www`. Súborové práva sa nezmenili,
+  `fim-publisher` môže zapisovať do tých istých priečinkov ako predtým.
+- **Testy:** posielali alerty na port 1025, teda do spusteného Mailpitu.
+  Teraz používajú port 1; pri behu z 24. 11. žiadny e-mail nepribudol.
 
 ## Opravy dokumentácie zistené pri overení
 
@@ -111,4 +133,4 @@ inštalácie FIM.
   dostupnom serveri.
 - Alerty boli overené iba cez lokálny Mailpit, nie cez skutočnú e-mailovú
   schránku so STARTTLS a heslom.
-- Reálny prechod cez polnoc ešte nebol pozorovaný (pozri tabuľku vyššie).
+- Automatický prepis presne o 00:00 ešte nebol pozorovaný (pozri tabuľku vyššie).

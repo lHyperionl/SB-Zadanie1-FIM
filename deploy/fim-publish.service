@@ -20,7 +20,9 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
-ReadWritePaths=/var/www/fim-demo /var/www/fim-staging
+# One common path: separate entries become separate mounts and rename() from
+# staging to the website would fail with EXDEV. File permissions still apply.
+ReadWritePaths=/var/www
 RestrictAddressFamilies=AF_UNIX
 MemoryMax=128M
 TimeoutStartSec=30

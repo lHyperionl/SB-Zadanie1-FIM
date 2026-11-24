@@ -41,7 +41,7 @@ mode = "0644"
 midnight_grace = 5
 [smtp]
 host = "127.0.0.1"
-port = 1025
+port = 1
 mode = "plain"
 sender = "fim@example.test"
 recipients = ["admin@example.test"]

@@ -110,9 +110,12 @@ sudo -u fim-publisher unlink /var/www/fim-demo/fifo-test
 sudo -u fim-publisher chmod 0666 /var/www/fim-demo/index.html
 ```
 
-Očakávaj `metadata_changed`: v zázname je `mode` 436 (0664) v `expected`
-a 438 (0666) v `actual`, pričom `sha256` sa nezmenil. Generátor stránku
-s neočakávanými právami neprepíše:
+Očakávaj `metadata_changed` najneskôr pri ďalšom skene (približne do 30 s),
+samotná zmena práv okamžitú kontrolu nespustí. V zázname je `mode` 436 (0664)
+v `expected` a 438 (0666) v `actual`. Obsah sa nezmenil, čo potvrdí rovnaký
+výstup `sha256sum` pred útokom a po ňom. Hodnoty `sha256` v zázname sa zhodujú
+iba v deň vytvorenia baseline, lebo `expected` obsahuje hash stránky z toho dňa.
+Generátor stránku s neočakávanými právami neprepíše:
 
 ```bash
 sudo systemctl start fim-publish.service
