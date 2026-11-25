@@ -40,6 +40,11 @@ Toto je výsledok malej ukážky, nie výkonová záruka pre ľubovoľný web.
 
 ## Čo pôvodné výsledky nepokrývali
 
+Po následnom audite pribudli regresné testy `tests/test_adversarial_tree.py`:
+neplatné POSIX názvy vrátane zápisu alertu do SQLite a zotavenia, obmedzenie
+enumerácie ešte pred materializáciou zoznamu, globálny rozpočet položiek
+a bezpečný limit hĺbky. Pôvodný údaj o 38 testoch vyššie popisuje prvé overenie.
+
 Kompletný inštalátor s apt, Nginx a zapnutím trvalých systemd služieb nebol
 pri pôvodnom overení spustený. Toto dopĺňa časť 2. Root smoke test overuje
 chránené rozloženie a prácu účtov, nenahrádza beh celého servera so systemd

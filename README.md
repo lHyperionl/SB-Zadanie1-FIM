@@ -157,7 +157,10 @@ systému. Časovač má presnosť 1 s; nejde o real-time systém.
   databázy a logov; do webu nezapisuje ani pri útoku.
 - Otváranie súborov odmieta symbolické odkazy vo všetkých komponentoch cesty,
   čítanie kontroluje zmeny počas merania. Špeciálne súbory sa nečítajú.
-- Limit je 10 000 položiek a 64 MiB na súbor. Prekročenie je chyba kontroly
+- Limit je 10 000 položiek, 64 MiB na súbor a hĺbka 64 adresárov pod koreňom.
+  Počet položiek sa obmedzuje už počas enumerácie, pred vytvorením celého zoznamu.
+  Neplatný UTF-8 názov sa zaznamená bezpečne ako chyba kontroly nadradeného adresára.
+  Prekročenie limitu je chyba kontroly
   s alertom, nie úspešný výsledok. Pre väčší web uprav konfiguráciu a otestuj výkon.
 - Opakované zistenie tej istej pretrvávajúcej odchýlky nevytvára ďalšie e-maily.
   Nový stav znamená nový incident. Front prežije reštart. Po nejasnom výsledku

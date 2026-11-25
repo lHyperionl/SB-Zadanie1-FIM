@@ -12,6 +12,13 @@ class Unstable(OSError):
     pass
 
 
+class ScanLimit(OSError):
+    pass
+
+
+MAX_DEPTH = 64
+
+
 @dataclass(frozen=True)
 class Entry:
     kind: str
@@ -103,29 +110,47 @@ def scan(root: Path, max_bytes: int, max_entries: int) -> Snapshot:
         result = Snapshot()
         count = 0
 
-        def walk(fd: int, relative: str) -> None:
+        def walk(fd: int, relative: str, depth: int = 0) -> None:
             nonlocal count
+            if depth > MAX_DEPTH:
+                raise ScanLimit(f"Directory tree exceeds depth limit ({MAX_DEPTH})")
             before = os.fstat(fd)
             result.entries[relative] = metadata(before)
             try:
-                names = sorted(os.listdir(fd))
+                # Reserve the budget while enumerating, before allocating an
+                # unbounded list or descending into children. The total names
+                # held across the recursion stack cannot exceed max_entries.
+                names = []
+                with os.scandir(fd) as iterator:
+                    for item in iterator:
+                        count += 1
+                        if count > max_entries:
+                            raise ScanLimit(f"Directory tree exceeds {max_entries} entries")
+                        names.append(item.name)
+                names.sort()
+            except ScanLimit:
+                raise
             except OSError as exc:
                 result.issues[relative] = str(exc)
                 return
             for name in names:
-                count += 1
-                if count > max_entries:
-                    raise OSError(f"Directory tree exceeds {max_entries} entries")
                 path = name if relative == "." else f"{relative}/{name}"
                 try:
                     name.encode("utf-8")
+                except UnicodeError:
+                    # SQLite TEXT cannot represent POSIX surrogateescape names.
+                    # Mark the representable parent incomplete; do not conflate
+                    # the escaped display spelling with an actual filename.
+                    result.issues[relative] = f"Filename is not valid UTF-8: {ascii(name)}"
+                    continue
+                try:
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
                     if stat.S_ISDIR(info.st_mode):
                         child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
                         try:
                             if identity(os.fstat(child)) != identity(info):
                                 raise Unstable("Directory replaced before traversal")
-                            walk(child, path)
+                            walk(child, path, depth + 1)
                             if identity(os.stat(name, dir_fd=fd, follow_symlinks=False)) != identity(info):
                                 raise Unstable("Directory replaced during traversal")
                         finally:
@@ -135,6 +160,8 @@ def scan(root: Path, max_bytes: int, max_entries: int) -> Snapshot:
                     else:
                         result.entries[path] = metadata(info)
                 except Unstable:
+                    raise
+                except ScanLimit:
                     raise
                 except (OSError, UnicodeError) as exc:
                     result.issues[path] = str(exc)
